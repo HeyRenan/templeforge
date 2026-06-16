@@ -1,0 +1,29 @@
+{
+  "name": "default",
+  "description": "A neutral, provider-agnostic request template: a Wrike top line, then Summary / Changes / Testing. Copy it with --init-template and edit freely.",
+  "topLine": "Wrike: {wrike_url}",
+  "global": {
+    "noEmoji": true,
+    "requireWrike": false,
+    "denySections": ["Checklist", "TODO"]
+  },
+  "sections": [
+    {
+      "id": "summary",
+      "title": "Summary",
+      "required": true,
+      "rules": { "maxSentences": 4 }
+    },
+    {
+      "id": "changes",
+      "title": "Changes",
+      "required": true
+    },
+    {
+      "id": "testing",
+      "title": "Testing",
+      "required": false,
+      "rules": { "minSentences": 1 }
+    }
+  ]
+}
