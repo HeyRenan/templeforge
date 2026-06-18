@@ -25,9 +25,12 @@ function headers() {
 }
 
 export function splitRepo(project) {
-  // A real Azure remote is "{org}/{project}/_git/{repo}"; parseRemote keeps the
-  // "_git" path segment, so drop it before splitting org/project/repo.
-  const [org, proj, ...rest] = project.split('/').filter((s) => s && s !== '_git');
+  // A real Azure remote is "{org}/{project}/_git/{repo}" (HTTPS) or
+  // "v3/{org}/{project}/{repo}" (SSH). parseRemote keeps the "_git" and the
+  // leading "v3" segments, so drop both before splitting org/project/repo.
+  let segs = project.split('/').filter((s) => s && s !== '_git');
+  if (segs[0] === 'v3') segs = segs.slice(1);
+  const [org, proj, ...rest] = segs;
   if (!org || !proj || !rest.length) {
     throw new Error('Azure project must be "org/project/repo", got: ' + project);
   }

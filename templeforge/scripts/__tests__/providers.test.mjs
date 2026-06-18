@@ -89,6 +89,15 @@ test('azure.splitRepo: drops the "_git" path segment from a real remote', () => 
     { org: 'my org', project: 'my proj', repo: 'my repo' });
 });
 
+test('azure.splitRepo: drops the leading "v3" from an SSH remote', async () => {
+  // Azure SSH remotes are git@ssh.dev.azure.com:v3/{org}/{project}/{repo}.
+  // parseRemote keeps the v3 segment; splitRepo must drop it like _git, else it
+  // reads org="v3" and points ship at a repo that doesn't exist.
+  const h = await detectHost('git@ssh.dev.azure.com:v3/myorg/myproj/myrepo');
+  assert.equal(h.provider, 'azure');
+  assert.deepEqual(azure.splitRepo(h.project), { org: 'myorg', project: 'myproj', repo: 'myrepo' });
+});
+
 test('splitRepo: a trailing slash never leaks into repo (bitbucket/gitea/azure)', () => {
   assert.deepEqual(bitbucket.splitRepo('acme/widgets/'), { workspace: 'acme', repo: 'widgets' });
   assert.deepEqual(gitea.splitRepo('ana/widgets/'), { owner: 'ana', repo: 'widgets' });
