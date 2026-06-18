@@ -109,23 +109,32 @@ function gitPush(slug) {
     'check your remote and credentials, then retry.');
 }
 
+// gh and glab both take "-R owner/repo" to target a repo other than the cwd's.
+// Without this the native fast path silently ignored --project (the REST path
+// honors it), so `ship --project other/repo` opened the request on the WRONG
+// repo whenever gh/glab happened to be installed. Empty when no override.
+export function repoFlag(project) {
+  return project ? ['-R', project] : [];
+}
+
 // ---- GitLab native (glab) ----
 function glabAuthed() {
   try { execFileSync('glab', ['auth', 'status'], { stdio: 'ignore' }); return true; } catch { return false; }
 }
-function glabShip({ slug, target, title, desc, draft }) {
+function glabShip({ slug, target, title, desc, draft, project }) {
   // GitLab marks a draft by a "Draft:" title prefix (no API/CLI draft flag).
   const { title: finalTitle } = applyDraft('gitlab', title, draft);
-  const view = (() => { try { return sh('glab', ['mr', 'view', slug, '-F', 'json']); } catch { return ''; } })();
+  const R = repoFlag(project);
+  const view = (() => { try { return sh('glab', ['mr', 'view', slug, '-F', 'json', ...R]); } catch { return ''; } })();
   const exists = /"iid"/.test(view);
   if (exists) {
-    sh('glab', ['mr', 'update', slug, '--title', finalTitle, '--description', readFileSync(desc, 'utf8')]);
+    sh('glab', ['mr', 'update', slug, '--title', finalTitle, '--description', readFileSync(desc, 'utf8'), ...R]);
   } else {
     sh('glab', ['mr', 'create', '--source-branch', slug, '--target-branch', target,
-      '--title', finalTitle, '--description', readFileSync(desc, 'utf8'), '--yes']);
+      '--title', finalTitle, '--description', readFileSync(desc, 'utf8'), '--yes', ...R]);
   }
   console.error('merge request ' + (exists ? 'updated' : 'created') + ' via glab');
-  const out = (() => { try { return sh('glab', ['mr', 'view', slug, '-F', 'json']); } catch { return ''; } })();
+  const out = (() => { try { return sh('glab', ['mr', 'view', slug, '-F', 'json', ...R]); } catch { return ''; } })();
   const m = out.match(/"web_url":\s*"([^"]+\/merge_requests\/\d+)"/);
   return m ? m[1] : `opened MR for ${slug} (run: glab mr view ${slug})`;
 }
@@ -134,25 +143,26 @@ function glabShip({ slug, target, title, desc, draft }) {
 function ghAuthed() {
   try { execFileSync('gh', ['auth', 'status'], { stdio: 'ignore' }); return true; } catch { return false; }
 }
-function ghShip({ slug, target, title, desc, draft }) {
+function ghShip({ slug, target, title, desc, draft, project }) {
+  const R = repoFlag(project);
   const existing = (() => {
-    try { return sh('gh', ['pr', 'view', slug, '--json', 'url,number']); } catch { return ''; }
+    try { return sh('gh', ['pr', 'view', slug, '--json', 'url,number', ...R]); } catch { return ''; }
   })();
   if (/"number"/.test(existing)) {
-    sh('gh', ['pr', 'edit', slug, '--title', title, '--body-file', desc]);
+    sh('gh', ['pr', 'edit', slug, '--title', title, '--body-file', desc, ...R]);
     console.error('pull request updated via gh');
     const m = existing.match(/"url":\s*"([^"]+)"/);
     if (m) return m[1];
   } else {
     const args = ['pr', 'create', '--head', slug, '--base', target,
-      '--title', title, '--body-file', desc];
+      '--title', title, '--body-file', desc, ...R];
     if (draft) args.push('--draft');
     const created = sh('gh', args).trim();
     console.error('pull request created via gh');
     const url = created.split('\n').find((l) => /^https?:\/\//.test(l));
     if (url) return url;
   }
-  const out = (() => { try { return sh('gh', ['pr', 'view', slug, '--json', 'url']); } catch { return ''; } })();
+  const out = (() => { try { return sh('gh', ['pr', 'view', slug, '--json', 'url', ...R]); } catch { return ''; } })();
   const m2 = out.match(/"url":\s*"([^"]+)"/);
   return m2 ? m2[1] : `opened PR for ${slug} (run: gh pr view ${slug})`;
 }
@@ -188,9 +198,9 @@ async function main() {
   // zero-dep REST driver. The vocabulary (MR vs PR) follows host.term.
   let url;
   if (host.provider === 'github' && has('gh') && ghAuthed()) {
-    url = ghShip({ slug: args.slug, target, title: args.title, desc: args.desc, draft: !!args.draft });
+    url = ghShip({ slug: args.slug, target, title: args.title, desc: args.desc, draft: !!args.draft, project: args.project });
   } else if (host.provider === 'gitlab' && has('glab') && glabAuthed()) {
-    url = glabShip({ slug: args.slug, target, title: args.title, desc: args.desc, draft: !!args.draft });
+    url = glabShip({ slug: args.slug, target, title: args.title, desc: args.desc, draft: !!args.draft, project: args.project });
   } else {
     // Marker forges (gitlab, gitea) get a title prefix; flag forges (bitbucket,
     // azure) get the boolean. applyDraft returns whichever this provider uses.
