@@ -59,6 +59,9 @@ node scripts/ship-flow.mjs manifest.json
 ```
 
 Provedor, projeto e branch alvo são detectados do seu remote `origin`.
+Adicione `"draft": true` ao manifesto para abrir um request em rascunho/WIP —
+GitHub, Bitbucket e Azure usam a flag nativa de draft; GitLab (`Draft:`) e Gitea
+(`WIP:`) usam um prefixo no título.
 
 ## O template
 

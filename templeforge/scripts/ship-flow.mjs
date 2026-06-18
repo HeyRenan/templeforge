@@ -13,6 +13,7 @@
 //   "title": "feat: thing",
 //   "slug": "feat/thing",
 //   "project": "group/repo",               // optional; else detected from remote
+//   "draft": false,                         // optional; open as draft/WIP request
 //   "strictness": "rich",                   // loose|rich|strict (absent = rich)
 //   "template": "path/to/template.json",    // optional; else resolved (see forge)
 //   "vars": { "ticket": "AB-12" },          // optional free key/value, fed to template
@@ -32,20 +33,28 @@ import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { homedir } from 'node:os';
+import { STRICTNESS_LEVELS, GLOBAL_STRICTNESS_FILE, readStrictnessDefault } from '../lib/strictness.mjs';
+
+// Re-export the strictness domain so existing importers of ship-flow keep working.
+export { STRICTNESS_LEVELS, GLOBAL_STRICTNESS_FILE, readStrictnessDefault };
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
-export const STRICTNESS_LEVELS = ['loose', 'rich', 'strict'];
-
-export const GLOBAL_STRICTNESS_FILE = join(homedir(), '.claude', 'templeforge', 'strictness');
-
-export function readStrictnessDefault(globalFile = GLOBAL_STRICTNESS_FILE) {
+// Read + parse a manifest file with friendly errors — the manifest is
+// hand-written, so a missing path or a JSON typo are the common mistakes and
+// deserve a clear message, not a raw ENOENT / SyntaxError.
+export function loadManifest(path, readFile = (p) => readFileSync(p, 'utf8')) {
+  let raw;
   try {
-    const v = readFileSync(globalFile, 'utf8').trim();
-    if (v) return v;
-  } catch { /* no global default set */ }
-  return undefined;
+    raw = readFile(path);
+  } catch {
+    throw new Error('manifest not found: ' + path);
+  }
+  try {
+    return JSON.parse(raw);
+  } catch (e) {
+    throw new Error('manifest is not valid JSON (' + path + '): ' + e.message);
+  }
 }
 
 export function validateManifest(m) {
@@ -57,9 +66,15 @@ export function validateManifest(m) {
   if (m.strictness != null && !STRICTNESS_LEVELS.includes(m.strictness)) {
     errors.push('strictness must be one of loose|rich|strict, got: ' + m.strictness);
   }
-  const sec = m.sections || {};
-  if (!sec || typeof sec !== 'object' || !Object.keys(sec).length) {
+  const isPlainObject = (x) => x != null && typeof x === 'object' && !Array.isArray(x);
+  const sec = m.sections;
+  if (!isPlainObject(sec) || !Object.keys(sec).length) {
     errors.push('sections (id -> file path map) is required and non-empty');
+  } else if (!Object.values(sec).every((v) => typeof v === 'string' && v.trim())) {
+    errors.push('every sections entry must be a string file path');
+  }
+  if (m.vars != null && !isPlainObject(m.vars)) {
+    errors.push('vars must be an object map of key -> value');
   }
   return errors;
 }
@@ -78,8 +93,12 @@ export function buildPlan(m, { descPath = 'mr-desc.md' } = {}) {
     ...(m.wrike ? ['--wrike', m.wrike] : []),
     ...(m.template ? ['--template', m.template] : []),
     ...sectionArgs, ...varArgs, '--out', descPath];
-  const ship = ['bash', join(HERE, 'ship.sh'), '--slug', m.slug, '--title', m.title,
-    '--desc', descPath, ...(m.project ? ['--project', m.project] : [])];
+  // ship.mjs is the one true ship driver — it routes all five providers via
+  // lib/host.mjs. (ship.sh is a thin back-compat shim that execs this same file.)
+  const ship = ['node', join(HERE, 'ship.mjs'), '--slug', m.slug, '--title', m.title,
+    '--desc', descPath,
+    ...(m.project ? ['--project', m.project] : []),
+    ...(m.draft ? ['--draft'] : [])];
   const stages = [
     { id: 'forge', cmd: forge },
     { id: 'ship', cmd: ship },
@@ -88,6 +107,18 @@ export function buildPlan(m, { descPath = 'mr-desc.md' } = {}) {
     stages.push({ id: 'wrike-link', cmd: ['node', join(HERE, 'wrike-link.mjs'), m.wrike, '{{MR_URL}}'] });
   }
   return stages;
+}
+
+// Pull the opened request's web url out of the ship stage's stdout. Each forge's
+// url carries a recognizable "<verb>/<number>" tail: GitLab merge_requests,
+// GitHub pull, Bitbucket pull-requests, Gitea pulls, Azure pullrequest. Prefer
+// that precise shape; fall back to the first absolute url only if none matched.
+const REQUEST_URL_RE =
+  /https?:\/\/\S*\/(?:merge_requests|pull-requests|pullrequest|pulls|pull)\/\d+/;
+
+export function extractRequestUrl(out) {
+  const s = String(out || '');
+  return (s.match(REQUEST_URL_RE) || [])[0] || (s.match(/https?:\/\/\S+/) || [])[0] || null;
 }
 
 // Strictness lint: pure, never fails the run. Printed as `LINT <level>: <msg>`.
@@ -114,7 +145,7 @@ async function main() {
     console.error('usage: ship-flow.mjs manifest.json [--dry-run]');
     process.exit(2);
   }
-  const m = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  const m = loadManifest(manifestPath);
   // strictness default: `/templeforge:strictness <level>` writes the GLOBAL file —
   // a machine-wide preference, never per-repo scratch. An explicit manifest wins.
   if (m.strictness == null) m.strictness = readStrictnessDefault();
@@ -141,16 +172,22 @@ async function main() {
     try {
       out = execFileSync(cmd[0], cmd.slice(1), { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
     } catch (e) {
-      console.error('ship-flow: stage ' + s.id + ' FAILED — fix and re-run (earlier stages are idempotent).');
-      process.exit(1);
+      // The failing stage's own stderr already streamed (stdio inherit); add its
+      // exit code so log/CI scrapes of ship-flow's output carry the failure too.
+      const code = typeof e.status === 'number' ? e.status : 1;
+      console.error('ship-flow: stage ' + s.id + ' FAILED (exit ' + code + ') — fix and re-run (earlier stages are idempotent).');
+      process.exit(code || 1);
     }
     process.stdout.write(out);
     if (s.id === 'ship') {
-      mrUrl = (out.match(/https?:\/\/\S*\/(merge_requests|pull|pullrequest|pull-requests)\/\d+/) || [])[0]
-        || (out.match(/https?:\/\/\S+/) || [])[0];
+      mrUrl = extractRequestUrl(out);
       if (!mrUrl) { console.error('ship-flow: could not extract the request url from ship output'); process.exit(1); }
     }
   }
+  // The rendered description file is left on disk (it's the request body that was
+  // sent — handy to inspect). It's a generated artifact, so note it: a user who
+  // doesn't want it committed should gitignore it.
+  console.error('ship-flow: rendered description left at mr-desc.md (a generated artifact — gitignore it if you keep one)');
   console.log('DONE ' + mrUrl);
 }
 

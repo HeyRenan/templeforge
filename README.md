@@ -28,6 +28,7 @@ makes the act **one command** across GitLab, GitHub, Bitbucket, Gitea and Azure.
 manifest.json ──► forge ──► ship ──► wrike-link ──► DONE <url>
                   │         │        │
                   │         │        └─ optional linkback comment on the Wrike task
+                  │         │           (posted when WRIKE_TOKEN is set)
                   │         └─ branch · commit · push · open MR/PR (provider-detected)
                   └─ render description from template + section bodies + vars,
                      validate against the template's rules (reject before opening)
@@ -57,6 +58,9 @@ node scripts/ship-flow.mjs manifest.json
 ```
 
 Provider, project and target branch are detected from your `origin` remote.
+Add `"draft": true` to the manifest to open a draft/WIP request — GitHub,
+Bitbucket and Azure use the native draft flag, GitLab (`Draft:`) and Gitea
+(`WIP:`) a title prefix.
 
 ## The template
 
@@ -113,6 +117,11 @@ authed, else zero-dep REST.
 
 A neutral self-hosted host (e.g. `git.acme.io`) defaults to GitLab; set
 `TEMPLEFORGE_PROVIDER` to override.
+
+Self-managed GitLab, GitHub Enterprise and self-hosted Gitea/Forgejo work out of
+the box — the REST drivers target the host from your `origin` remote. Set
+`GITLAB_HOST` / `GITHUB_HOST` / `GITEA_HOST` only to override that (e.g. when the
+API lives on a different host than the git remote).
 
 ## Strictness
 

@@ -2,12 +2,19 @@
 // Portable: no `glab` binary required. Resolves a token from, in order:
 //   1. $GITLAB_TOKEN  2. $GLAB_TOKEN  3. ~/.config/glab-cli/config.yml or
 //      ~/Library/Application Support/glab-cli/config.yml (if glab happens to be set up)
-// Host defaults to gitlab.com; override with $GITLAB_HOST.
+// Host comes from the detected remote (set by the router), then $GITLAB_HOST,
+// then gitlab.com — see setHost below.
 
 import { execFileSync } from 'node:child_process';
+import { parseBody, errorDetail } from './rest.mjs';
 
-const HOST = process.env.GITLAB_HOST || 'gitlab.com';
-const API = `https://${HOST}/api/v4`;
+// Host resolution order: an explicit host set by the router (from the detected
+// remote) wins, then $GITLAB_HOST, then gitlab.com. This is what makes a
+// self-managed GitLab work via remote detection — without it every REST call hit
+// gitlab.com regardless of the origin.
+let HOST = process.env.GITLAB_HOST || 'gitlab.com';
+export function setHost(h) { if (h) HOST = h; }
+const api = () => `https://${HOST}/api/v4`;
 
 // If glab is installed and logged in, ask it for the token. Most reliable —
 // glab stores tokens in YAML or the OS keyring, which we shouldn't parse by hand.
@@ -58,14 +65,20 @@ async function req(method, path, { body, form } = {}) {
     opts.headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
   }
-  const res = await fetch(`${API}${path}`, opts);
-  const text = await res.text();
-  let json;
-  try { json = text ? JSON.parse(text) : null; } catch { json = text; }
+  const res = await fetch(`${api()}${path}`, opts);
+  const json = parseBody(await res.text());
   if (!res.ok) {
-    throw new Error(`GitLab ${method} ${path} -> ${res.status}: ${typeof json === 'string' ? json : JSON.stringify(json)}`);
+    throw new Error(`GitLab ${method} ${path} -> ${res.status}: ${errorDetail(json)}`);
   }
   return json;
+}
+
+// Resolve the project's default branch (so ship targets `master`/custom defaults,
+// not a hardcoded `main`). Completes the uniform driver contract — the other four
+// providers already expose this.
+export async function getDefaultBranch(project) {
+  const r = await req('GET', `/projects/${encodeProject(project)}`);
+  return (r && r.default_branch) || 'main';
 }
 
 // Find an open MR for a source branch (returns the MR object or null)

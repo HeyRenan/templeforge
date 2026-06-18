@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { validateManifest, buildPlan, lintStrictness, readStrictnessDefault } from '../ship-flow.mjs';
+import { validateManifest, buildPlan, lintStrictness, readStrictnessDefault, extractRequestUrl, loadManifest } from '../ship-flow.mjs';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -21,6 +21,20 @@ test('validateManifest: title/slug/sections required', () => {
   assert.ok(errs.some((e) => /missing required field: slug/.test(e)));
   assert.ok(errs.some((e) => /sections .* required/.test(e)));
   assert.deepEqual(validateManifest(null), ['manifest must be a JSON object']);
+});
+
+test('validateManifest: sections must be an id->path map of strings, not an array', () => {
+  const base = { title: 't', slug: 's' };
+  assert.ok(validateManifest({ ...base, sections: ['a', 'b'] }).some((e) => /sections/.test(e)));
+  assert.ok(validateManifest({ ...base, sections: { a: 123 } }).some((e) => /string file path|path/.test(e)));
+  assert.deepEqual(validateManifest({ ...base, sections: { a: 'a.md' } }), []);
+});
+
+test('validateManifest: vars, when present, must be an object map', () => {
+  const base = { title: 't', slug: 's', sections: { a: 'a.md' } };
+  assert.ok(validateManifest({ ...base, vars: 'ticket=AB-1' }).some((e) => /vars/.test(e)));
+  assert.ok(validateManifest({ ...base, vars: ['x'] }).some((e) => /vars/.test(e)));
+  assert.deepEqual(validateManifest({ ...base, vars: { ticket: 'AB-1' } }), []);
 });
 
 test('validateManifest: project optional (detected from remote)', () => {
@@ -63,10 +77,53 @@ test('buildPlan: ship gets --project, wrike-link gets the url placeholder', () =
   assert.equal(wl.cmd.at(-1), '{{MR_URL}}');
 });
 
+test('buildPlan: ship runs node ship.mjs (5-provider router), not bash ship.sh', () => {
+  const ship = buildPlan(M).find((s) => s.id === 'ship');
+  assert.equal(ship.cmd[0], 'node');
+  assert.match(ship.cmd[1], /ship\.mjs$/);
+  assert.ok(!ship.cmd.some((c) => /ship\.sh$/.test(c)), 'must not invoke ship.sh');
+});
+
+test('buildPlan: manifest draft -> ship gets --draft; absent -> no --draft', () => {
+  assert.ok(buildPlan({ ...M, draft: true }).find((s) => s.id === 'ship').cmd.includes('--draft'));
+  assert.ok(!buildPlan(M).find((s) => s.id === 'ship').cmd.includes('--draft'));
+});
+
 test('buildPlan: no project -> ship omits --project (remote detection)', () => {
   const { project, ...noProject } = M;
   const ship = buildPlan(noProject).find((s) => s.id === 'ship');
   assert.ok(!ship.cmd.includes('--project'));
+});
+
+test('loadManifest: clear errors for missing file and bad JSON', () => {
+  const missing = () => { throw new Error('ENOENT'); };
+  assert.throws(() => loadManifest('nope.json', missing), /manifest not found: nope\.json/);
+  assert.throws(() => loadManifest('bad.json', () => '{bad'), /not valid JSON \(bad\.json\)/);
+  assert.deepEqual(loadManifest('ok.json', () => '{"title":"t"}'), { title: 't' });
+});
+
+test('extractRequestUrl: matches every provider url shape', () => {
+  const urls = {
+    gitlab: 'https://gitlab.com/g/r/-/merge_requests/12',
+    github: 'https://github.com/o/r/pull/34',
+    bitbucket: 'https://bitbucket.org/w/r/pull-requests/56',
+    gitea: 'https://codeberg.org/o/r/pulls/78',
+    azure: 'https://dev.azure.com/org/proj/_git/repo/pullrequest/90',
+  };
+  for (const [k, u] of Object.entries(urls)) {
+    assert.equal(extractRequestUrl(`ship: opened\n${u}\n`), u, `${k} url should match precisely`);
+  }
+});
+
+test('extractRequestUrl: prefers the request url over an earlier diagnostic url', () => {
+  const out = 'see https://docs.example.com/help\nhttps://github.com/o/r/pull/7\n';
+  assert.equal(extractRequestUrl(out), 'https://github.com/o/r/pull/7');
+});
+
+test('extractRequestUrl: falls back to first absolute url, then null', () => {
+  assert.equal(extractRequestUrl('opened at https://example.com/x'), 'https://example.com/x');
+  assert.equal(extractRequestUrl('no url here'), null);
+  assert.equal(extractRequestUrl(''), null);
 });
 
 test('lintStrictness rich (default): nudges for a wrike url', () => {

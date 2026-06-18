@@ -5,6 +5,8 @@
 // Host is Bitbucket Cloud (api.bitbucket.org/2.0). "project" is "workspace/repo".
 // Contract matches the other drivers: openOrUpdateMR, resolveAuth.
 
+import { parseBody, errorDetail } from './rest.mjs';
+
 const API = 'https://api.bitbucket.org/2.0';
 
 export function resolveAuth() {
@@ -29,7 +31,7 @@ function headers() {
 }
 
 export function splitRepo(project) {
-  const [workspace, ...rest] = project.split('/');
+  const [workspace, ...rest] = project.split('/').filter(Boolean);
   return { workspace, repo: rest.join('/') };
 }
 
@@ -40,11 +42,9 @@ async function req(method, path, { body } = {}) {
     opts.body = JSON.stringify(body);
   }
   const res = await fetch(`${API}${path}`, opts);
-  const text = await res.text();
-  let json;
-  try { json = text ? JSON.parse(text) : null; } catch { json = text; }
+  const json = parseBody(await res.text());
   if (!res.ok) {
-    throw new Error(`Bitbucket ${method} ${path} -> ${res.status}: ${typeof json === 'string' ? json : JSON.stringify(json)}`);
+    throw new Error(`Bitbucket ${method} ${path} -> ${res.status}: ${errorDetail(json)}`);
   }
   return json;
 }
@@ -57,17 +57,22 @@ export async function getDefaultBranch(project) {
 
 export async function findOpenPR(project, sourceBranch) {
   const { workspace, repo } = splitRepo(project);
-  const q = encodeURIComponent(`state="OPEN" AND source.branch.name="${sourceBranch}"`);
+  // Escape \ and " inside the BBQL string literal — git allows a double quote in a
+  // branch name, which would otherwise close the literal and break the query (URL
+  // encoding is not query escaping). BBQL escapes both with a backslash.
+  const safeBranch = sourceBranch.replace(/[\\"]/g, '\\$&');
+  const q = encodeURIComponent(`state="OPEN" AND source.branch.name="${safeBranch}"`);
   const list = await req('GET', `/repositories/${workspace}/${repo}/pullrequests?q=${q}`);
   return list && Array.isArray(list.values) && list.values.length ? list.values[0] : null;
 }
 
-export async function createPR(project, { sourceBranch, targetBranch, title, description }) {
+export async function createPR(project, { sourceBranch, targetBranch, title, description, draft = false }) {
   const { workspace, repo } = splitRepo(project);
   return req('POST', `/repositories/${workspace}/${repo}/pullrequests`, {
     body: {
       title,
       description: description || '',
+      draft: !!draft,
       source: { branch: { name: sourceBranch } },
       destination: { branch: { name: targetBranch || 'main' } },
     },

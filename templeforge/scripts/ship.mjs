@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Provider-agnostic ship: branch off target, commit (no AI signature), push,
-// then open/update the MR (GitLab) or PR (GitHub). Routes via lib/host.mjs.
-// Prefers the native CLI (glab / gh) when present+authed, falls back to REST.
+// then open/update the request on any of the five forges (GitLab MR / GitHub,
+// Bitbucket, Gitea, Azure PR). Routes via lib/host.mjs. Prefers the native CLI
+// (glab / gh) when present+authed, falls back to the zero-dep REST driver.
 //
 //   node ship.mjs --slug feat/x --title "T" --desc descfile [--message "msg"]
 //                 [--target main] [--project owner/repo] [--draft]
@@ -11,23 +12,21 @@
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { detectHost } from '../lib/host.mjs';
 
-const HERE = dirname(fileURLToPath(import.meta.url));
+const VALUE_FLAGS = {
+  '--slug': 'slug', '--title': 'title', '--desc': 'desc',
+  '--message': 'message', '--target': 'target', '--project': 'project',
+};
 
 function parseArgs(argv) {
   const a = {};
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
-    const map = {
-      '--slug': 'slug', '--title': 'title', '--desc': 'desc',
-      '--message': 'message', '--target': 'target', '--project': 'project',
-    };
     if (k === '--draft') { a.draft = true; continue; }
-    if (map[k]) { a[map[k]] = argv[++i]; continue; }
-    throw new Error(`ship.mjs: unknown arg ${k}`);
+    if (VALUE_FLAGS[k]) { a[VALUE_FLAGS[k]] = argv[++i]; continue; }
+    throw new Error(`ship: unknown arg ${k}`);
   }
   return a;
 }
@@ -42,11 +41,31 @@ function has(bin) {
   try { execFileSync(bin, ['--version'], { stdio: 'ignore' }); return true; } catch { return false; }
 }
 
+// How each forge marks a draft request:
+//   - title-marker forges (gitlab, gitea) have NO draft flag; a title prefix
+//     ("Draft:" / "WIP:") is the only signal.
+//   - flag forges (github, bitbucket, azure) take a real boolean on the API.
+const DRAFT_TITLE_MARKER = { gitlab: 'Draft', gitea: 'WIP' };
+
+// Resolve draft into the two things the call sites need: the title to send and
+// whether to pass a native draft flag. For marker forges we prefix the title
+// (idempotently — never stack "Draft: Draft:") and DON'T set a flag; for flag
+// forges we leave the title and set the flag. draft=false is a clean no-op.
+export function applyDraft(provider, title, draft) {
+  if (!draft) return { title, flag: false };
+  const marker = DRAFT_TITLE_MARKER[provider];
+  if (marker) {
+    const prefixed = /^\s*(draft|wip):/i.test(title) ? title : `${marker}: ${title}`;
+    return { title: prefixed, flag: false };
+  }
+  return { title, flag: true };
+}
+
 function refuseAISig(msg) {
   // Case-insensitive AND whitespace/separator-tolerant: catches "co_authored_by",
   // "Co Authored By", "Generated  with", etc., not just the canonical spelling.
   if (/co[-_\s]?authored[-_\s]?by|generated\s+with|🤖/i.test(msg)) {
-    throw new Error('ship.mjs: refusing AI signature in commit message');
+    throw new Error('ship: refusing AI signature in commit message');
   }
 }
 
@@ -54,13 +73,21 @@ function gitInit(slug, target) {
   const staged = (() => { try { return sh('git', ['diff', '--cached', '--name-only']); } catch { return ''; } })();
   const offenders = staged.split('\n').filter((l) => /(^|\/)(build|dist)\//.test(l));
   if (offenders.length) {
-    throw new Error('ship.mjs: refusing to commit build artifacts:\n  ' + offenders.join('\n  '));
+    throw new Error('ship: refusing to commit build artifacts:\n  ' + offenders.join('\n  '));
   }
   const cur = sh('git', ['rev-parse', '--abbrev-ref', 'HEAD']).trim();
   if (cur !== slug) {
     shQuiet('git', ['checkout', target]);
     shQuiet('git', ['pull', '--ff-only']);
     if (!shQuiet('git', ['checkout', '-b', slug])) shQuiet('git', ['checkout', slug]);
+  }
+  // Both checkouts are best-effort (a dirty tree or an existing branch elsewhere
+  // can make them fail silently). Assert we actually landed on the slug branch —
+  // otherwise the commit + push below would target the WRONG branch (e.g. main).
+  const now = sh('git', ['rev-parse', '--abbrev-ref', 'HEAD']).trim();
+  if (now !== slug) {
+    throw new Error(`ship: expected to be on branch "${slug}" but on "${now}" — ` +
+      'resolve your working tree (uncommitted changes? branch exists?) and retry.');
   }
 }
 
@@ -73,22 +100,31 @@ function gitCommit(message) {
 }
 
 function gitPush(slug) {
+  // gitInit guarantees HEAD is the slug branch, so a bare push targets the right
+  // ref. Try to set upstream first; fall back to a plain push. If BOTH fail, say
+  // so — opening the request against an unpushed branch would just error obscurely.
   if (shQuiet('git', ['push', '-u', 'origin', slug])) return;
-  shQuiet('git', ['push']);
+  if (shQuiet('git', ['push'])) return;
+  throw new Error(`ship: failed to push branch "${slug}" to origin — ` +
+    'check your remote and credentials, then retry.');
 }
 
 // ---- GitLab native (glab) ----
 function glabAuthed() {
   try { execFileSync('glab', ['auth', 'status'], { stdio: 'ignore' }); return true; } catch { return false; }
 }
-function glabShip({ slug, target, title, desc }) {
+function glabShip({ slug, target, title, desc, draft }) {
+  // GitLab marks a draft by a "Draft:" title prefix (no API/CLI draft flag).
+  const { title: finalTitle } = applyDraft('gitlab', title, draft);
   const view = (() => { try { return sh('glab', ['mr', 'view', slug, '-F', 'json']); } catch { return ''; } })();
-  if (/"iid"/.test(view)) {
-    sh('glab', ['mr', 'update', slug, '--title', title, '--description', readFileSync(desc, 'utf8')]);
+  const exists = /"iid"/.test(view);
+  if (exists) {
+    sh('glab', ['mr', 'update', slug, '--title', finalTitle, '--description', readFileSync(desc, 'utf8')]);
   } else {
     sh('glab', ['mr', 'create', '--source-branch', slug, '--target-branch', target,
-      '--title', title, '--description', readFileSync(desc, 'utf8'), '--yes']);
+      '--title', finalTitle, '--description', readFileSync(desc, 'utf8'), '--yes']);
   }
+  console.error('merge request ' + (exists ? 'updated' : 'created') + ' via glab');
   const out = (() => { try { return sh('glab', ['mr', 'view', slug, '-F', 'json']); } catch { return ''; } })();
   const m = out.match(/"web_url":\s*"([^"]+\/merge_requests\/\d+)"/);
   return m ? m[1] : `opened MR for ${slug} (run: glab mr view ${slug})`;
@@ -104,6 +140,7 @@ function ghShip({ slug, target, title, desc, draft }) {
   })();
   if (/"number"/.test(existing)) {
     sh('gh', ['pr', 'edit', slug, '--title', title, '--body-file', desc]);
+    console.error('pull request updated via gh');
     const m = existing.match(/"url":\s*"([^"]+)"/);
     if (m) return m[1];
   } else {
@@ -111,6 +148,7 @@ function ghShip({ slug, target, title, desc, draft }) {
       '--title', title, '--body-file', desc];
     if (draft) args.push('--draft');
     const created = sh('gh', args).trim();
+    console.error('pull request created via gh');
     const url = created.split('\n').find((l) => /^https?:\/\//.test(l));
     if (url) return url;
   }
@@ -126,7 +164,7 @@ async function main() {
     process.exit(2);
   }
   const descPath = resolve(args.desc);
-  if (!existsSync(descPath)) { console.error('ship.mjs: desc file not found: ' + descPath); process.exit(1); }
+  if (!existsSync(descPath)) { console.error('ship: desc file not found: ' + descPath); process.exit(1); }
   args.desc = descPath;
 
   // Provider/host always come from the real origin remote. --project only
@@ -134,8 +172,9 @@ async function main() {
   // misdetect the provider for a self-hosted or GitHub remote.
   const host = await detectHost();
   const project = args.project || host.project;
-  // Resolve the target branch from the forge when the driver can tell us;
-  // GitLab MRs default to 'main' (glab handles it server-side).
+  // Resolve the target from the forge's real default branch (all five drivers
+  // expose getDefaultBranch); fall back to 'main' only if the lookup fails or a
+  // future driver lacks it. --target overrides everything.
   const target = args.target || (typeof host.client.getDefaultBranch === 'function'
     ? await host.client.getDefaultBranch(project).catch(() => 'main')
     : 'main');
@@ -151,11 +190,14 @@ async function main() {
   if (host.provider === 'github' && has('gh') && ghAuthed()) {
     url = ghShip({ slug: args.slug, target, title: args.title, desc: args.desc, draft: !!args.draft });
   } else if (host.provider === 'gitlab' && has('glab') && glabAuthed()) {
-    url = glabShip({ slug: args.slug, target, title: args.title, desc: args.desc });
+    url = glabShip({ slug: args.slug, target, title: args.title, desc: args.desc, draft: !!args.draft });
   } else {
+    // Marker forges (gitlab, gitea) get a title prefix; flag forges (bitbucket,
+    // azure) get the boolean. applyDraft returns whichever this provider uses.
+    const { title, flag } = applyDraft(host.provider, args.title, !!args.draft);
     const r = await host.client.openOrUpdateMR(project, {
-      sourceBranch: args.slug, targetBranch: target, title: args.title,
-      description: readFileSync(args.desc, 'utf8'), draft: !!args.draft,
+      sourceBranch: args.slug, targetBranch: target, title,
+      description: readFileSync(args.desc, 'utf8'), draft: flag,
     });
     const tag = host.provider === 'gitlab' ? `!${r.iid}` : `#${r.iid}`;
     console.error(`${host.term} ${r.action} (${tag})`);
@@ -164,4 +206,6 @@ async function main() {
   console.log(url);
 }
 
-main().catch((e) => { console.error(String(e.message || e)); process.exit(1); });
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((e) => { console.error(String(e.message || e)); process.exit(1); });
+}

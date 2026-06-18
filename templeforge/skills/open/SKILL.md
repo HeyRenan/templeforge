@@ -50,12 +50,15 @@ placeholders `{wrike_url}` and any `{var}` you pass with `--var key=value` are
 substituted in the top line and every body. `mr-build` rejects violations BEFORE
 the request opens — exit 0 PASS, 1 FAIL with the list.
 
-Copy the built-in to start your own: `node scripts/mr-build.mjs --init-template`
+Copy the built-in to start your own: `node <plugin>/scripts/mr-build.mjs --init-template`
 writes `.templeforge/template.json`. Edit sections and rules there.
 
 ## The flow (manifest-first)
 
-1. **Branch off fresh main** — `git checkout main && git pull --ff-only && git checkout -b feat/<slug>`.
+1. **Branch off the fresh default branch** (often `main`, but respect the repo —
+   it may be `master` or custom):
+   `def=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@'); def=${def:-main}; git checkout "$def" && git pull --ff-only && git checkout -b feat/<slug>`.
+   (ship resolves the same default for the request's target branch.)
 2. **Implement** if not done. Match surrounding style. Commit with no AI
    signature: `git commit -m "<type>(<scope>): <summary>"`. Never commit
    gitignored `build/`/`dist/`.
@@ -69,6 +72,7 @@ writes `.templeforge/template.json`. Edit sections and rules there.
      "title": "feat: thing",
      "slug": "feat/thing",
      "project": "group/repo",
+     "draft": false,
      "strictness": "rich",
      "vars": { "ticket": "AB-12" },
      "sections": { "summary": "summary.md", "changes": "changes.md", "testing": "testing.md" }
@@ -76,8 +80,13 @@ writes `.templeforge/template.json`. Edit sections and rules there.
    ```
 
    `project` is optional — omitted, it's detected from the remote. `wrike` is
-   optional — omitted, there's no top line and no linkback stage.
-5. **Ship** — `node scripts/ship-flow.mjs manifest.json`. ONE command chains
+   optional — omitted, there's no top line and no linkback stage. The linkback
+   comment is only posted when `WRIKE_TOKEN` is set; without it the wrike-link
+   stage just prints the MCP calls to make instead. `draft` is
+   optional — `true` opens the request as a draft/WIP. GitHub, Bitbucket and
+   Azure use the native draft flag; GitLab marks it with a `Draft:` title prefix
+   and Gitea/Forgejo with `WIP:` (those forges have no draft flag).
+5. **Ship** — `node <plugin>/scripts/ship-flow.mjs manifest.json`. ONE command chains
    forge (render + validate) → ship (branch/commit/push/open) → wrike-link. Fails
    loudly at the first broken stage, ends `DONE <url>`. `--dry-run` previews the
    stage commands.
@@ -98,7 +107,7 @@ change what the template enforces — that's always hard-validated by mr-build).
 | `strict` | Demands a Wrike url and at least two sections. |
 
 **Strictness as a command** — `/templeforge:strictness <level>` (or any wording
-asking to set it) runs `node scripts/strictness.mjs <level>`: validates,
+asking to set it) runs `node <plugin>/scripts/strictness.mjs <level>`: validates,
 persists the GLOBAL default, prints `STRICTNESS <level>`. Never write the file by
 hand. It is machine-wide, never per-repo. Relay the output.
 
@@ -118,6 +127,11 @@ and authed, else fall back to REST.
 
 A neutral self-hosted host (e.g. `git.acme.io`) defaults to GitLab; set
 `$TEMPLEFORGE_PROVIDER` to override.
+
+For a self-managed GitLab, GitHub Enterprise, or self-hosted Gitea/Forgejo, the
+REST drivers target the host from your `origin` remote automatically. `GITLAB_HOST`
+/ `GITHUB_HOST` / `GITEA_HOST` only need to be set to override that (e.g. the API
+lives on a different host than the git remote).
 
 ## Portability rules
 

@@ -1,14 +1,14 @@
 // Detect the git remote provider and hand back a normalized client.
 // Zero-dep: parses `git remote get-url origin` and dynamically imports the
-// matching provider module (gitlab.mjs / github.mjs).
+// matching provider module (one of the five in lib/<provider>.mjs).
 //
 //   const host = await detectHost();        // from cwd's origin remote
 //   const host = await detectHost(url);     // from an explicit remote url
-//   host -> { provider, project, owner, repo, host, webBase, client }
+//   host -> { provider, project, owner, repo, host, webBase, term, client }
 //
-// `project` is "group/repo" (the form both clients accept).
-// `client` exposes: openOrUpdateMR(project, args), uploadFile(project, file, opts),
-// resolveAuth(), and (github only) getDefaultBranch(project).
+// `project` is "group/repo" (the form every client accepts).
+// `client` uniform contract (all five drivers): openOrUpdateMR(project, args),
+// resolveAuth(), resolveToken(), getDefaultBranch(project).
 
 import { execFileSync } from 'node:child_process';
 
@@ -28,7 +28,10 @@ export function originUrl(cwd = process.cwd()) {
 //   ssh://git@gitlab.example.com:22/group/sub/repo.git
 //   https://gitlab.com/group/sub/repo
 export function parseRemote(url) {
-  if (!url) throw new Error('No origin remote URL to parse.');
+  if (!url) {
+    throw new Error('No origin remote URL to parse. Run inside a git repo whose ' +
+      '"origin" remote points at your forge (templeforge detects the provider from it).');
+  }
   let host, path;
 
   if (/^[a-z]+:\/\//i.test(url)) {
@@ -36,7 +39,7 @@ export function parseRemote(url) {
     let u = url.replace(/^ssh:\/\/[^@]+@/, 'ssh://').replace(/^[a-z]+:\/\//i, 'https://');
     const m = u.match(/^https:\/\/([^/]+)\/(.+)$/);
     if (!m) throw new Error(`Unrecognized remote URL: ${url}`);
-    host = m[1].replace(/:\d+$/, ''); // strip :port
+    host = m[1].replace(/^[^@]*@/, '').replace(/:\d+$/, ''); // strip userinfo, then :port
     path = m[2];
   } else {
     // scp-like: git@host:group/repo.git
@@ -46,7 +49,9 @@ export function parseRemote(url) {
     path = scp[2];
   }
 
-  path = path.replace(/\.git$/, '').replace(/^\/+|\/+$/g, '');
+  // Trim surrounding slashes FIRST, then the .git suffix — otherwise a URL like
+  // ".../repo.git/" leaves ".git" on the repo (the $ anchor misses it pre-trim).
+  path = path.replace(/^\/+|\/+$/g, '').replace(/\.git$/, '');
   const segs = path.split('/').filter(Boolean);
   if (segs.length < 2) throw new Error(`Remote URL missing owner/repo: ${url}`);
 
@@ -84,11 +89,22 @@ const DRIVERS = {
   azure: () => import('./azure.mjs'),
 };
 
+// INVARIANT: one active host per process. A driver `client` is the cached ES
+// module object (not a fresh instance), so its host is module-global state.
+// detectHost always re-points it, so "last detectHost wins" — correct for the
+// CLI (one ship == one process == one detectHost). Do NOT hold two clients for
+// different hosts and use them interleaved in the same process; the second
+// detectHost reconfigures the shared module. (A per-call instance would need each
+// driver refactored into a factory — deliberately not done for this CLI.)
 export async function detectHost(url = originUrl()) {
   const { host, project, owner, repo } = parseRemote(url);
   const provider = providerForHost(host);
   const load = DRIVERS[provider] || DRIVERS.gitlab;
   const client = await load();
+  // Point the driver at the host from the remote (self-managed GitLab, GHE,
+  // self-hosted Gitea). Drivers with a fixed cloud host (bitbucket, azure) have
+  // no setHost and keep their default.
+  if (typeof client.setHost === 'function') client.setHost(host);
   const webBase = `https://${host}`;
   return { provider, project, owner, repo, host, webBase, term: requestTerm(provider), client };
 }

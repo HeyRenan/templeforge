@@ -17,16 +17,32 @@ const API = `https://${HOST}/api/v4`;
 // Accept a numeric id, a permalink (?id=123456789), or an API string id (IEAB...).
 export function parseTaskId(input) {
   if (!input) return null;
-  const m = String(input).match(/[?&]id=(\d+)/);
+  const s = String(input).trim();
+  if (!s) return null;
+  const m = s.match(/[?&]id=(\d+)/);
   if (m) return { kind: 'numeric', id: m[1] };
-  if (/^\d+$/.test(input)) return { kind: 'numeric', id: input };
-  return { kind: 'api', id: input }; // already a Wrike API id
+  if (/^\d+$/.test(s)) return { kind: 'numeric', id: s };
+  // A URL-shaped input (has a scheme or a path) that didn't yield ?id=<digits>
+  // is a malformed permalink, NOT an API id — Wrike API ids carry no / : ? chars.
+  if (/[/:?]/.test(s)) return null;
+  return { kind: 'api', id: s }; // already a Wrike API id
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 export function block(url) {
   // Matches the established finishing-a-task pattern: a labeled link appended
-  // to the description. HTML because Wrike descriptions are HTML.
-  return `<br/><b>MERGE REQUEST</b><br/><a href="${url}">${url}</a>`;
+  // to the description. Wrike descriptions are HTML, so the url is escaped before
+  // interpolation — a query "&" or a stray quote must not break the attribute.
+  const safe = escapeHtml(url);
+  return `<br/><b>MERGE REQUEST</b><br/><a href="${safe}">${safe}</a>`;
 }
 
 function printMcpPlan(taskInput, url) {
@@ -80,11 +96,19 @@ async function viaApi(taskInput, url) {
     if (conv && conv.data && conv.data[0]) taskId = conv.data[0].id;
   }
 
-  const got = await wreq('GET', `/tasks/${taskId}?fields=["description"]`);
-  const cur = (got.data && got.data[0] && got.data[0].description) || '';
-  if (cur.includes(url)) {
+  // Ask for the permalink too, so both exit paths below print the SAME real task
+  // url from the API instead of hand-building one (the old code mis-built it for
+  // API-id tasks, emitting a broken "...open.htm?id").
+  const got = await wreq('GET', `/tasks/${taskId}?fields=["description","permalink"]`);
+  const row = (got.data && got.data[0]) || {};
+  const cur = row.description || '';
+  const fallback = tid.kind === 'numeric' ? `https://${HOST}/open.htm?id=${tid.id}` : taskId;
+
+  // The stored description holds the ESCAPED url (see block()), so the idempotency
+  // probe must look for the escaped form, not the raw url.
+  if (cur.includes(escapeHtml(url))) {
     console.error('wrike-link: link already present, nothing to do.');
-    console.log(`https://${HOST}/open.htm?id=${tid.kind === 'numeric' ? tid.id : ''}`.replace(/=$/, ''));
+    console.log(row.permalink || fallback);
     return;
   }
   const next = cur + block(url);
@@ -92,7 +116,7 @@ async function viaApi(taskInput, url) {
   const updated = await wreq('PUT', `/tasks/${taskId}`, body);
   const permId = updated.data && updated.data[0] && updated.data[0].permalink;
   console.error('wrike-link: description updated.');
-  console.log(permId || `https://${HOST}/open.htm?id=${tid.kind === 'numeric' ? tid.id : taskId}`);
+  console.log(permId || row.permalink || fallback);
 }
 
 async function main() {
@@ -103,6 +127,11 @@ async function main() {
   }
   if (!/^https?:\/\//.test(url)) {
     console.error('wrike-link: MR/PR url must be absolute http(s).');
+    process.exit(2);
+  }
+  if (!parseTaskId(taskInput)) {
+    console.error('wrike-link: could not read a task id from "' + taskInput +
+      '" — pass a numeric id, a permalink with ?id=<number>, or a Wrike API id.');
     process.exit(2);
   }
   if (process.env.WRIKE_TOKEN) {

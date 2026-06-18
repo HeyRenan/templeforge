@@ -53,4 +53,7 @@ node ~/.claude/plugins/templeforge/templeforge/scripts/ship-flow.mjs manifest.js
   `cd ~/.claude/plugins/templeforge/templeforge && node --test 'scripts/__tests__/*.test.mjs'`
 - Customize the request format per repo:
   `node <plugin>/scripts/mr-build.mjs --init-template` writes `.templeforge/template.json`.
+- Self-managed GitLab, GitHub Enterprise and self-hosted Gitea/Forgejo work out of
+  the box — the drivers target the host from your `origin` remote. Set
+  `GITLAB_HOST` / `GITHUB_HOST` / `GITEA_HOST` only to override it.
 - A neutral self-hosted host defaults to GitLab; set `TEMPLEFORGE_PROVIDER` to override.

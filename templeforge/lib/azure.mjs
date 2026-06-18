@@ -4,6 +4,8 @@
 // "project" is "org/project/repo" (Azure nests an org and a project above the
 // repo). Contract: openOrUpdateMR, resolveAuth.
 
+import { parseBody, errorDetail } from './rest.mjs';
+
 const API_VERSION = '7.1';
 
 export function resolveAuth() {
@@ -23,7 +25,9 @@ function headers() {
 }
 
 export function splitRepo(project) {
-  const [org, proj, ...rest] = project.split('/');
+  // A real Azure remote is "{org}/{project}/_git/{repo}"; parseRemote keeps the
+  // "_git" path segment, so drop it before splitting org/project/repo.
+  const [org, proj, ...rest] = project.split('/').filter((s) => s && s !== '_git');
   if (!org || !proj || !rest.length) {
     throw new Error('Azure project must be "org/project/repo", got: ' + project);
   }
@@ -42,11 +46,9 @@ async function req(method, url, { body } = {}) {
     opts.body = JSON.stringify(body);
   }
   const res = await fetch(`${url}${sep}api-version=${API_VERSION}`, opts);
-  const text = await res.text();
-  let json;
-  try { json = text ? JSON.parse(text) : null; } catch { json = text; }
+  const json = parseBody(await res.text());
   if (!res.ok) {
-    throw new Error(`Azure ${method} ${url} -> ${res.status}: ${typeof json === 'string' ? json : JSON.stringify(json)}`);
+    throw new Error(`Azure ${method} ${url} -> ${res.status}: ${errorDetail(json)}`);
   }
   return json;
 }
@@ -70,7 +72,7 @@ export async function findOpenPR(project, sourceBranch) {
   return list && Array.isArray(list.value) && list.value.length ? list.value[0] : null;
 }
 
-export async function createPR(project, { sourceBranch, targetBranch, title, description }) {
+export async function createPR(project, { sourceBranch, targetBranch, title, description, draft = false }) {
   const { org, project: proj, repo } = splitRepo(project);
   return req('POST', `${base(org, proj, repo)}/pullrequests`, {
     body: {
@@ -78,6 +80,7 @@ export async function createPR(project, { sourceBranch, targetBranch, title, des
       targetRefName: refName(targetBranch || 'main'),
       title,
       description: description || '',
+      isDraft: !!draft,
     },
   });
 }

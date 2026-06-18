@@ -5,20 +5,22 @@
 //   resolveAuth()  -> { token, scheme:'bearer' }
 //   resolveToken() -> token
 //   openOrUpdatePR(repo, { sourceBranch, targetBranch, title, description, draft })
-//   uploadFile(repo, filePath, { branch, dir })  -> { markdown, url, html_url }
 //   getDefaultBranch(repo)
 //
 // `repo` is "owner/name". Auth: GITHUB_TOKEN (or GH_TOKEN) env -> Bearer.
 // Falls back to the `gh` CLI's stored token (`gh auth token`) when present.
-// Host via GITHUB_HOST env (default github.com); GHE uses /api/v3.
+// Host comes from the detected remote (set by the router), then GITHUB_HOST, then
+// github.com — see setHost below. GHE uses /api/v3.
 
 import { execFileSync } from 'node:child_process';
+import { parseBody, errorDetail } from './rest.mjs';
 
-const HOST = process.env.GITHUB_HOST || 'github.com';
+// Host order: router-set (from the detected remote) > $GITHUB_HOST > github.com.
+// Without this a GitHub Enterprise remote would still hit api.github.com.
+let HOST = process.env.GITHUB_HOST || 'github.com';
+export function setHost(h) { if (h) HOST = h; }
 // github.com -> api.github.com/...  ;  GHE host -> https://HOST/api/v3
-const API = HOST === 'github.com'
-  ? 'https://api.github.com'
-  : `https://${HOST}/api/v3`;
+const api = () => (HOST === 'github.com' ? 'https://api.github.com' : `https://${HOST}/api/v3`);
 
 const ACCEPT = 'application/vnd.github+json';
 const API_VERSION = '2022-11-28';
@@ -74,15 +76,10 @@ async function req(method, path, { body } = {}) {
     opts.headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
   }
-  const res = await fetch(`${API}${path}`, opts);
-  const text = await res.text();
-  let json;
-  try { json = text ? JSON.parse(text) : null; } catch { json = text; }
+  const res = await fetch(`${api()}${path}`, opts);
+  const json = parseBody(await res.text());
   if (!res.ok) {
-    const msg = json && json.message
-      ? json.message + (json.errors ? ' ' + JSON.stringify(json.errors) : '')
-      : (typeof json === 'string' ? json : JSON.stringify(json));
-    throw new Error(`GitHub ${method} ${path} -> ${res.status}: ${msg}`);
+    throw new Error(`GitHub ${method} ${path} -> ${res.status}: ${errorDetail(json)}`);
   }
   return json;
 }

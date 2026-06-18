@@ -11,12 +11,13 @@
 //
 // Template resolution: .templeforge/template.json (repo root) ->
 // $TEMPLEFORGE_TEMPLATE -> scripts/templates/default.json (embedded).
-// Exit 0 PASS, 1 validation FAIL, 2 usage.
+// Exit 0 PASS, 1 error (validation FAIL, bad template, unreadable section file…),
+// 2 usage.
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { dirname, join, basename } from 'node:path';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const EMBEDDED = join(HERE, 'templates', 'default.json');
@@ -52,14 +53,77 @@ export function applyVars(str, vars = {}) {
   return str.replace(/\{([a-zA-Z0-9_]+)\}/g, (m, k) => (k in vars ? String(vars[k]) : m));
 }
 
+// Validate the SHAPE of a parsed template before assemble/validate touch it, so a
+// hand-edited .templeforge/template.json with a typo fails with a clear message
+// instead of a raw "template.sections is not iterable" deep in the loop.
+export function assertTemplate(template) {
+  if (!template || typeof template !== 'object' || Array.isArray(template)) {
+    throw new Error('template must be a JSON object');
+  }
+  if (!Array.isArray(template.sections)) {
+    throw new Error('template.sections must be an array of { id, title } entries');
+  }
+  for (const [i, sec] of template.sections.entries()) {
+    if (!sec || typeof sec !== 'object' || !sec.id || !sec.title) {
+      throw new Error(`template.sections[${i}] needs both an "id" and a "title"`);
+    }
+    assertRules(sec.rules, `template.sections[${i}].rules`);
+  }
+  assertGlobal(template.global);
+  return template;
+}
+
+function assertGlobal(g) {
+  if (g == null) return;
+  if (typeof g !== 'object' || Array.isArray(g)) throw new Error('template.global must be an object');
+  if (g.denySections != null &&
+      (!Array.isArray(g.denySections) || !g.denySections.every((x) => typeof x === 'string'))) {
+    throw new Error('template.global.denySections must be an array of strings');
+  }
+  for (const k of ['noEmoji', 'requireWrike']) {
+    if (g[k] != null && typeof g[k] !== 'boolean') throw new Error(`template.global.${k} must be a boolean`);
+  }
+}
+
+function assertRules(rules, where) {
+  if (rules == null) return;
+  if (typeof rules !== 'object' || Array.isArray(rules)) throw new Error(`${where} must be an object`);
+  for (const k of ['maxSentences', 'minSentences']) {
+    if (rules[k] != null && (typeof rules[k] !== 'number' || rules[k] < 0 || !Number.isFinite(rules[k]))) {
+      throw new Error(`${where}.${k} must be a positive number`);
+    }
+  }
+  if (rules.mustHaveCodeBlock != null && typeof rules.mustHaveCodeBlock !== 'boolean') {
+    throw new Error(`${where}.mustHaveCodeBlock must be a boolean`);
+  }
+  if (rules.mustMatch != null && typeof rules.mustMatch !== 'string') {
+    throw new Error(`${where}.mustMatch must be a string (a regex pattern)`);
+  }
+}
+
+// A topLine like "Wrike: {wrike_url}" is an empty shell when it references one or
+// more {placeholders} and every referenced value resolves to blank — rendering it
+// would leave a bare label ("Wrike: ") atop the request. A static line (no
+// placeholders) or one with at least one filled value is kept.
+function topLineIsEmptyShell(topLine, ctx) {
+  const refs = [...topLine.matchAll(/\{([a-zA-Z0-9_]+)\}/g)].map((m) => m[1]);
+  if (!refs.length) return false;
+  return refs.every((k) => !(k in ctx) || !String(ctx[k]).trim());
+}
+
 export function assemble(template, { wrikeUrl, sections, vars = {} }) {
   const lines = [];
   const ctx = { ...vars, wrike_url: wrikeUrl || '' };
-  if (template.topLine) lines.push(applyVars(template.topLine, ctx));
+  if (template.topLine && !topLineIsEmptyShell(template.topLine, ctx)) {
+    lines.push(applyVars(template.topLine, ctx));
+  }
   lines.push('');
   for (const sec of template.sections) {
     const body = sections[sec.id];
-    if (body == null) continue;
+    // Skip a missing OR empty body: an optional section left blank shouldn't emit
+    // a bare heading. A required-but-empty section is still caught by validate(),
+    // which inspects the raw sections independently of what assemble() renders.
+    if (body == null || !String(body).trim()) continue;
     lines.push('## ' + sec.title);
     lines.push('');
     lines.push(applyVars(body.trim(), ctx));
@@ -89,13 +153,23 @@ export function validate(template, { wrikeUrl, sections, assembled }) {
     if (rules.mustHaveCodeBlock && !/```/.test(body)) {
       v.push(`${sec.title}: must contain a code block (the commands the reviewer runs)`);
     }
-    if (rules.mustMatch && !new RegExp(rules.mustMatch, 'm').test(body)) {
-      v.push(`${sec.title}: does not match required pattern /${rules.mustMatch}/`);
+    if (rules.mustMatch) {
+      // rules.mustMatch is author-supplied — a typo'd regex must surface as a
+      // clear violation, not crash the whole build with a raw SyntaxError.
+      let re;
+      try { re = new RegExp(rules.mustMatch, 'm'); }
+      catch { re = null; v.push(`${sec.title}: rule mustMatch has an invalid regex /${rules.mustMatch}/`); }
+      if (re && !re.test(body)) {
+        v.push(`${sec.title}: does not match required pattern /${rules.mustMatch}/`);
+      }
     }
   }
 
-  if (g.denySections) {
+  if (Array.isArray(g.denySections)) {
+    // Tolerate a hand-edited template with a stray non-string entry (e.g. a number
+    // or null from a missed quote) instead of crashing on bad.replace(...).
     for (const bad of g.denySections) {
+      if (typeof bad !== 'string' || !bad) continue;
       const re = new RegExp('^#{1,6}\\s*' + bad.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'im');
       if (re.test(assembled)) v.push(`forbidden section present: "${bad}" (template denies it)`);
     }
@@ -145,19 +219,23 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     }
     if (!a.out) { console.error('usage: mr-build.mjs --wrike URL --section id=file [--var k=v ...] --out mr-desc.md | --init-template'); process.exit(2); }
     const tplPath = resolveTemplatePath({ explicit: a.template, env: process.env.TEMPLEFORGE_TEMPLATE, repoRoot: gitRoot() });
-    const template = JSON.parse(readFileSync(tplPath, 'utf8'));
+    const template = assertTemplate(JSON.parse(readFileSync(tplPath, 'utf8')));
     const sections = {};
-    for (const [id, file] of Object.entries(a.sections)) sections[id] = readFileSync(file, 'utf8');
+    for (const [id, file] of Object.entries(a.sections)) {
+      try { sections[id] = readFileSync(file, 'utf8'); }
+      catch { throw new Error(`section "${id}" points to a file that can't be read: ${file}`); }
+    }
 
+    const tplName = template.name || basename(tplPath);
     const assembled = assemble(template, { wrikeUrl: a.wrike, sections, vars: a.vars });
     const violations = validate(template, { wrikeUrl: a.wrike, sections, assembled });
     if (violations.length) {
-      console.error('mr-build: ' + violations.length + ' validation error(s) against template "' + template.name + '":');
+      console.error('mr-build: ' + violations.length + ' validation error(s) against template "' + tplName + '":');
       for (const x of violations) console.error('  - ' + x);
       process.exit(1);
     }
     writeFileSync(a.out, assembled);
-    console.error('mr-build: wrote ' + a.out + ' (template ' + template.name + ', ' + tplPath + ')');
+    console.error('mr-build: wrote ' + a.out + ' (template ' + tplName + ', ' + tplPath + ')');
     console.log('PASS ' + a.out);
   } catch (e) {
     console.error(String(e.message || e));
