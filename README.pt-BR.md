@@ -1,7 +1,7 @@
 # templeforge
 
 [![ci](https://github.com/HeyRenan/templeforge/actions/workflows/ci.yml/badge.svg)](https://github.com/HeyRenan/templeforge/actions/workflows/ci.yml)
-&nbsp;[![tests](https://img.shields.io/badge/tests-62%20passing-brightgreen)](#testes)
+&nbsp;[![tests](https://img.shields.io/badge/tests-123%20passing-brightgreen)](#testes)
 &nbsp;[![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 **Leia em:** [English](README.md) · Português
@@ -59,6 +59,8 @@ node scripts/ship-flow.mjs manifest.json
 ```
 
 Provedor, projeto e branch alvo são detectados do seu remote `origin`.
+Para abrir em outro repo, adicione `"project": "owner/repo"` ao manifesto
+(respeitado tanto no caminho via CLI nativa quanto no REST).
 Adicione `"draft": true` ao manifesto para abrir um request em rascunho/WIP —
 GitHub, Bitbucket e Azure usam a flag nativa de draft; GitLab (`Draft:`) e Gitea
 (`WIP:`) usam um prefixo no título.
@@ -140,7 +142,7 @@ node scripts/strictness.mjs strict   # STRICTNESS strict
 ## Testes
 
 ```bash
-node --test 'scripts/__tests__/*.test.mjs'   # 62 testes, sem rede nem browser
+node --test 'scripts/__tests__/*.test.mjs'   # 123 testes, sem rede nem browser
 ```
 
 ## Instalação

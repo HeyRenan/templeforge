@@ -1,7 +1,7 @@
 # templeforge
 
 [![ci](https://github.com/HeyRenan/templeforge/actions/workflows/ci.yml/badge.svg)](https://github.com/HeyRenan/templeforge/actions/workflows/ci.yml)
-&nbsp;[![tests](https://img.shields.io/badge/tests-62%20passing-brightgreen)](#tests)
+&nbsp;[![tests](https://img.shields.io/badge/tests-123%20passing-brightgreen)](#tests)
 &nbsp;[![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 **Read in:** English · [Português](README.pt-BR.md)
@@ -58,6 +58,8 @@ node scripts/ship-flow.mjs manifest.json
 ```
 
 Provider, project and target branch are detected from your `origin` remote.
+To open against a different repo, add `"project": "owner/repo"` to the manifest
+(honored on both the native-CLI and REST paths).
 Add `"draft": true` to the manifest to open a draft/WIP request — GitHub,
 Bitbucket and Azure use the native draft flag, GitLab (`Draft:`) and Gitea
 (`WIP:`) a title prefix.
@@ -144,7 +146,7 @@ node scripts/strictness.mjs strict   # STRICTNESS strict
 ## Tests
 
 ```bash
-node --test 'scripts/__tests__/*.test.mjs'   # 62 tests, no network or browser
+node --test 'scripts/__tests__/*.test.mjs'   # 123 tests, no network or browser
 ```
 
 ## Install

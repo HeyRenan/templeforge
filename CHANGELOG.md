@@ -11,6 +11,8 @@ forge, with an optional Wrike linkback.
 
 ## [Unreleased]
 
+## [1.0.1] — 2026-06-18
+
 ### Fixed
 - **Open skill used repo-relative script paths.** The skill told the agent to run
   `node scripts/ship-flow.mjs` (and mr-build/strictness) — but the agent runs in
@@ -138,6 +140,28 @@ forge, with an optional Wrike linkback.
   to the GitLab client. The advertised five providers now all work end to end.
 - **`ship.mjs` no longer runs on import** (guarded `main()`), so its helpers are
   importable and unit-testable; removed a dead `HERE` binding.
+- **Azure SSH remotes detected from `origin` now work.** Azure's SSH form is
+  `git@ssh.dev.azure.com:v3/{org}/{project}/{repo}`; `parseRemote` kept the leading
+  `v3` segment, so `azure.splitRepo` read `org: "v3"` and pointed every API call at
+  a repo that doesn't exist. `splitRepo` now drops the `v3` segment like it already
+  drops `_git` (the HTTPS form).
+- **Template content rules run on the rendered body, not the raw `{var}` text**
+  (`mr-build`). A section body of `Closes {ticket}.` shipped with `--var ticket=AB-12`
+  renders to `Closes AB-12.`, but `validate` tested `mustMatch`/sentence rules
+  against the raw `{ticket}` string — so a rule like `AB-\d+` rejected a request
+  whose description actually satisfied it. Rules now see the same substituted body
+  the reader does (vars + `wrike_url`).
+- **A hand-edited global strictness value no longer fails the whole run.** The
+  machine-wide strictness file is one plain word a user may edit by hand; a typo
+  (`Strict`, `verbose`) was read verbatim into `m.strictness` and then rejected by
+  `validateManifest` with a confusing manifest error. `readStrictnessDefault` now
+  honors only a recognized level and falls back to the default otherwise — as strict
+  as the CLI write path already was.
+- **`--project` is honored on the native-CLI fast path** (`ship`). `ship --project
+  other/repo` opened the request on the *cwd* repo whenever `gh`/`glab` was installed
+  — the native path ignored the override while the REST path respected it. Both paths
+  now pass `-R owner/repo` (only when an explicit `--project` is given, so the default
+  cwd-remote behavior is unchanged).
 
 ### Changed
 - **The open command now says what to do with its `$ARGUMENTS` intent.** The
@@ -246,5 +270,6 @@ First stable release.
   to customize per repo.
 - 62 tests, no network or browser needed.
 
-[Unreleased]: https://github.com/HeyRenan/templeforge/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/HeyRenan/templeforge/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/HeyRenan/templeforge/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/HeyRenan/templeforge/commits/main

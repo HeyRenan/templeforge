@@ -5,14 +5,14 @@
   },
   "metadata": {
     "description": "Personal marketplace hosting the templeforge plugin",
-    "version": "1.0.0"
+    "version": "1.0.1"
   },
   "plugins": [
     {
       "name": "templeforge",
       "source": "./templeforge",
       "description": "Forge merge/pull requests from templates — one command branches, commits, renders a validated description from your template, and opens the request on GitLab, GitHub, Bitbucket, Gitea or Azure DevOps, with an optional Wrike linkback. Zero-dep, no MCP, provider-agnostic.",
-      "version": "1.0.0"
+      "version": "1.0.1"
     }
   ]
 }
