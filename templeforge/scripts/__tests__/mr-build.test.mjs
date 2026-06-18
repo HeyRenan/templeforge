@@ -159,6 +159,18 @@ test('validate: mustMatch -> violation when pattern absent', () => {
   assert.ok(v.some((x) => /pattern/.test(x)));
 });
 
+test('validate: content rules run on the rendered body, not the raw {var} body', () => {
+  // A section body of "Closes {ticket}." with --var ticket=AB-12 renders to
+  // "Closes AB-12." A mustMatch of AB-\d+ must pass — it failed before because
+  // validate tested the raw "{ticket}" string the user never sees.
+  const T = { ...TPL, sections: [{ id: 'summary', title: 'Summary', required: true, rules: { mustMatch: 'AB-\\d+' } }] };
+  const sections = { summary: 'Closes ticket {ticket} with the fix.' };
+  const vars = { ticket: 'AB-12' };
+  const assembled = assemble(T, { sections, vars });
+  const v = validate(T, { sections, vars, assembled });
+  assert.deepEqual(v, [], 'rendered body matches the pattern; no violation expected');
+});
+
 test('validate: an invalid mustMatch regex is reported, not thrown', () => {
   const T = { ...TPL, sections: [{ id: 'summary', title: 'Summary', required: true, rules: { mustMatch: '([unclosed' } }] };
   const sections = { summary: 'whatever' };

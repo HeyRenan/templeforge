@@ -132,17 +132,21 @@ export function assemble(template, { wrikeUrl, sections, vars = {} }) {
   return lines.join('\n').trim() + '\n';
 }
 
-export function validate(template, { wrikeUrl, sections, assembled }) {
+export function validate(template, { wrikeUrl, sections, vars = {}, assembled }) {
   const v = [];
   const g = template.global || {};
+  // Same context assemble() renders with, so content rules see what the request
+  // actually shows (vars + wrike_url substituted), not the raw "{var}" text.
+  const ctx = { ...vars, wrike_url: wrikeUrl || '' };
 
   for (const sec of template.sections) {
-    const body = sections[sec.id];
-    if (sec.required && (body == null || !String(body).trim())) {
+    const raw = sections[sec.id];
+    if (sec.required && (raw == null || !String(raw).trim())) {
       v.push(`required section missing: ${sec.title}`);
       continue;
     }
-    if (body == null) continue;
+    if (raw == null) continue;
+    const body = applyVars(String(raw), ctx);
     const rules = sec.rules || {};
     if (rules.maxSentences && countSentences(body) > rules.maxSentences) {
       v.push(`${sec.title}: more than ${rules.maxSentences} sentences (it is a Summary, not a diff walkthrough)`);
@@ -228,7 +232,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 
     const tplName = template.name || basename(tplPath);
     const assembled = assemble(template, { wrikeUrl: a.wrike, sections, vars: a.vars });
-    const violations = validate(template, { wrikeUrl: a.wrike, sections, assembled });
+    const violations = validate(template, { wrikeUrl: a.wrike, sections, vars: a.vars, assembled });
     if (violations.length) {
       console.error('mr-build: ' + violations.length + ' validation error(s) against template "' + tplName + '":');
       for (const x of violations) console.error('  - ' + x);
