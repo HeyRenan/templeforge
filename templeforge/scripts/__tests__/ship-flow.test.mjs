@@ -157,3 +157,15 @@ test('readStrictnessDefault: global file only — absent or blank -> undefined',
   writeFileSync(glob, 'strict');
   assert.equal(readStrictnessDefault(glob), 'strict');
 });
+
+test('readStrictnessDefault: a hand-edited junk value is ignored, not propagated', () => {
+  // The file is one plain word a user may edit by hand. A typo ("Strict",
+  // "verbose") must not become m.strictness and fail validateManifest with a
+  // confusing manifest error — read is as strict as the CLI write.
+  const dir = mkdtempSync(join(tmpdir(), 'str-'));
+  const glob = join(dir, 'global-strictness');
+  writeFileSync(glob, 'Strict');
+  assert.equal(readStrictnessDefault(glob), undefined);
+  writeFileSync(glob, 'verbose');
+  assert.equal(readStrictnessDefault(glob), undefined);
+});

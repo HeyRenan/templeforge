@@ -14,7 +14,10 @@ export const GLOBAL_STRICTNESS_FILE = join(homedir(), '.claude', 'templeforge', 
 export function readStrictnessDefault(globalFile = GLOBAL_STRICTNESS_FILE) {
   try {
     const v = readFileSync(globalFile, 'utf8').trim();
-    if (v) return v;
+    // Only honor a recognized level. The file is one plain word a user may edit
+    // by hand; a typo must fall back to the default, not poison m.strictness and
+    // fail the manifest. Read is as strict as the CLI write.
+    if (STRICTNESS_LEVELS.includes(v)) return v;
   } catch { /* no global default set */ }
   return undefined;
 }
