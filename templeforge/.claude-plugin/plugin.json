@@ -1,21 +1,9 @@
 {
   "name": "templeforge",
-  "version": "1.0.1",
-  "description": "Forge merge/pull requests from templates — one command branches, commits, renders a validated description from your template, and opens the request on GitLab, GitHub, Bitbucket, Gitea or Azure DevOps, with an optional Wrike linkback. Zero-dep, no MCP, provider-agnostic.",
+  "version": "2.0.0",
+  "description": "Open merge/pull requests from a validated template on GitHub, GitLab or Bitbucket, with an optional Wrike linkback. Script-driven, zero dependencies.",
   "author": {
     "name": "Renan"
   },
-  "keywords": [
-    "merge-request",
-    "pull-request",
-    "template",
-    "gitlab",
-    "github",
-    "bitbucket",
-    "gitea",
-    "azure-devops",
-    "wrike",
-    "code-review",
-    "claude-code-plugin"
-  ]
+  "license": "MIT"
 }

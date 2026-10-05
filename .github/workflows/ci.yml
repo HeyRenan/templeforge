@@ -11,4 +11,4 @@ jobs:
       - uses: actions/setup-node@v5
         with: { node-version: 22 }
       - name: unit suite
-        run: node --test templeforge/scripts/__tests__/*.test.mjs
+        run: node --test 'tests/*.test.mjs'

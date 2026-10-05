@@ -1,0 +1,32 @@
+{
+  "name": "default",
+  "description": "Neutral request template: a Wrike top line, then Summary / Changes / Testing. Copy it with `templeforge.mjs init-template` and edit freely.",
+  "topLine": "Wrike: {wrike_url}",
+  "global": {
+    "noEmoji": true,
+    "requireWrike": false,
+    "denySections": ["Checklist", "TODO"]
+  },
+  "sections": [
+    {
+      "id": "summary",
+      "title": "Summary",
+      "required": true,
+      "rules": { "maxSentences": 4 },
+      "hint": "What changed and why, not how."
+    },
+    {
+      "id": "changes",
+      "title": "Changes",
+      "required": true,
+      "hint": "Short bullets, one per notable change."
+    },
+    {
+      "id": "testing",
+      "title": "Testing",
+      "required": false,
+      "rules": { "minSentences": 1 },
+      "hint": "Steps a reviewer runs, each with the expected result."
+    }
+  ]
+}
